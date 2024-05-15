@@ -27,11 +27,11 @@ public class LoginInterceptor implements HandlerInterceptor {
      * 不是由Spring创建的，而是我们手动new的，因此通过构造函数给它赋值。
      * 在new的时候将注入的stringRedisTemplate值传递给它。
      */
-    private final StringRedisTemplate stringRedisTemplate;
+//    private final StringRedisTemplate stringRedisTemplate;
 
-    public LoginInterceptor(StringRedisTemplate stringRedisTemplate) {
-        this.stringRedisTemplate = stringRedisTemplate;
-    }
+//    public LoginInterceptor(StringRedisTemplate stringRedisTemplate) {
+//        this.stringRedisTemplate = stringRedisTemplate;
+//    }
 
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
 //        System.out.println("===============================================");
@@ -48,22 +48,33 @@ public class LoginInterceptor implements HandlerInterceptor {
 //        UserHolder.saveUser(userDTO);
 //        return true;
         // ===================================== 使用Redis ================================================
-        // 1. 获取token
-        String token = request.getHeader("authorization");
-        // 2. 从redis中取token对应的user
-        Map<Object, Object> map = stringRedisTemplate.opsForHash().entries(RedisConstants.LOGIN_USER_KEY + token);
-        // 3. 用户不存在，未登录
-        if (map.isEmpty()) {  // map不可能未null，看entries源码
+//        // 1. 获取token
+//        String token = request.getHeader("authorization");
+//        // 2. 从redis中取token对应的user
+//        Map<Object, Object> map = stringRedisTemplate.opsForHash().entries(RedisConstants.LOGIN_USER_KEY + token);
+//        // 3. 用户不存在，未登录
+//        if (map.isEmpty()) {  // map不可能未null，看entries源码
+//            response.setStatus(HttpStatus.HTTP_NOT_AUTHORITATIVE);
+//            return false;
+//        }
+//        // 4. 用户存在，已登录，需要刷新redis的ttl
+//        // 4.1 将map转为user
+//        UserDTO user = BeanUtil.fillBeanWithMap(map, new UserDTO(), false);
+//        // 4.2 刷新ttl
+//        stringRedisTemplate.expire(RedisConstants.LOGIN_USER_KEY + token, RedisConstants.LOGIN_USER_TTL, TimeUnit.SECONDS);
+//        // 5. 将用户存入ThreadLocal
+//        UserHolder.saveUser(user);
+//        return true;
+
+        // ===================================== 使用Redis，双拦截器，优化刷新redis中用户ttl================================================
+        // 1. 直接从ThreadLocal中取用户
+        UserDTO user = UserHolder.getUser();
+        // 2. 如果用户不存在，未登录
+        if (user == null) {
             response.setStatus(HttpStatus.HTTP_NOT_AUTHORITATIVE);
             return false;
         }
-        // 4. 用户存在，已登录，需要刷新redis的ttl
-        // 4.1 将map转为user
-        UserDTO user = BeanUtil.fillBeanWithMap(map, new UserDTO(), false);
-        // 4.2 刷新ttl
-        stringRedisTemplate.expire(RedisConstants.LOGIN_USER_KEY + token, RedisConstants.LOGIN_USER_TTL, TimeUnit.SECONDS);
-        // 5. 将用户存入ThreadLocal
-        UserHolder.saveUser(user);
+        // 3. 如果用户存在，已登录，放行
         return true;
     }
 }

@@ -1,5 +1,6 @@
 package com.hmdp.config;
 
+import com.hmdp.intercept.EverythingInterceptor;
 import com.hmdp.intercept.LoginInterceptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
@@ -23,7 +24,8 @@ public class MvcConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(new LoginInterceptor(stringRedisTemplate))
+        registry.addInterceptor(new EverythingInterceptor(stringRedisTemplate));
+        registry.addInterceptor(new LoginInterceptor())
                 .excludePathPatterns(
                         "/user/code",
                         "/user/login",
