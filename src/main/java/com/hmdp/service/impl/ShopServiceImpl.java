@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.dto.Result;
@@ -19,7 +20,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
- *  服务实现类
+ * 服务实现类
  * </p>
  *
  * @author 虎哥
@@ -37,16 +38,28 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     public Result queryById(Long id) {
+        Shop shop = queryByIdBreakDown(id);
+//        Shop shop = queryByIdPassThrough(id);
+        return Result.ok(shop);
+    }
+
+
+    /**
+     * 解决缓存穿透的queryById
+     *
+     * @param id
+     * @return
+     */
+    private Shop queryByIdPassThrough(Long id) {
         // 1. 直接从redis中查
         String shopJsonStr = stringRedisTemplate.opsForValue().get(RedisConstants.CACHE_SHOP_KEY + id);
         // 2. 如果redis命中，并且不是空串，直接返回结果；
         if (StrUtil.isNotBlank(shopJsonStr)) { // blank: null, "", " ", "\t"
-            Shop shop = JSONUtil.toBean(shopJsonStr, Shop.class);
-            return Result.ok(shop);
+            return JSONUtil.toBean(shopJsonStr, Shop.class);
         }
         // 3. 没有命中，或者是空串。如果是空串，则店铺在数据库中不存在（缓存空串解决缓存穿透问题）
         if (shopJsonStr != null) // redis命中了，是空串
-            return Result.fail("店铺信息不存在");
+            return null;
 
         // 4. 缓存没有命中，查数据库
         Shop shop = this.getById(id);
@@ -58,7 +71,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
                     RedisConstants.CACHE_NULL_TTL,
                     TimeUnit.MINUTES
             );
-            return Result.fail("店铺信息不存在！");
+            return null;
         }
         // 5. 数据库中有数据，将数据缓存到redis
         stringRedisTemplate.opsForValue().set(
@@ -67,7 +80,67 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
                 RedisConstants.CACHE_SHOP_TTL,
                 TimeUnit.MINUTES
         );
-        return Result.ok(shop);
+        return shop;
+    }
+
+    /**
+     * 解决缓存穿透和缓存击穿的queryBuId
+     *
+     * @param id
+     * @return
+     */
+    private Shop queryByIdBreakDown(Long id) {
+        String lockKey = RedisConstants.LOCK_SHOP_KEY + id;
+        try {
+            boolean hasLock = false;
+            int maxSpin = 100;   // 设置最大自旋次数，自旋次数超过，返回错误信息
+            while (maxSpin > 0) {
+                // 1. 直接从redis中查
+                String shopJsonStr = stringRedisTemplate.opsForValue().get(RedisConstants.CACHE_SHOP_KEY + id);
+                // 2. 如果redis命中，并且不是空串，直接返回结果；
+                if (StrUtil.isNotBlank(shopJsonStr)) { // blank: null, "", " ", "\t"
+                    return JSONUtil.toBean(shopJsonStr, Shop.class);
+                }
+                // 3. 没有命中，或者是空串。如果是空串，则店铺在数据库中不存在（缓存空串解决缓存穿透问题）
+                if (shopJsonStr != null) // redis命中了，是空串
+                    return null;
+
+                // 4. 缓存没有命中，查数据库
+                // 4.1 为了解决缓存击穿问题，访问数据库时，加锁，保证只有一个请求会访问数据库
+                hasLock = tryLock(lockKey);
+                // 4.2 如果拿到了锁，访问数据库
+                if (hasLock) {
+                    Shop shop = this.getById(id);
+                    Thread.sleep(300); // 模拟复制业务，需要消耗较长时间来查询数据库
+                    if (shop == null) {
+                        // 如果数据库中没有数据，缓存空串解决缓存穿透问题，返回错误信息
+                        stringRedisTemplate.opsForValue().set(
+                                RedisConstants.CACHE_SHOP_KEY + id,
+                                "",
+                                RedisConstants.CACHE_NULL_TTL,
+                                TimeUnit.MINUTES
+                        );
+                        return null;
+                    }
+                    // 5. 数据库中有数据，将数据缓存到redis
+                    stringRedisTemplate.opsForValue().set(
+                            RedisConstants.CACHE_SHOP_KEY + id,
+                            JSONUtil.toJsonStr(shop),
+                            RedisConstants.CACHE_SHOP_TTL,
+                            TimeUnit.MINUTES
+                    );
+                    return shop;
+                }
+                Thread.sleep(50);   // 自旋过程中，休眠50ms
+                maxSpin--;
+            }
+            // 超过自选次数，报异常或返回错误信息等
+            return null;
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            unlock(lockKey);
+        }
     }
 
     @Override
@@ -81,5 +154,21 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         // 2. 删除redis缓存
         stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY + shop.getId());
         return Result.ok();
+    }
+
+    /**
+     * 用redis的setnx命令来获取一个锁
+     *
+     * @param key
+     * @return
+     */
+    private boolean tryLock(String key) {
+        // 设置过期时间，避免死锁
+        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", RedisConstants.LOCK_SHOP_TTL, TimeUnit.MINUTES);
+        return BooleanUtil.isTrue(flag);
+    }
+
+    private void unlock(String key) {
+        stringRedisTemplate.delete(key);
     }
 }
